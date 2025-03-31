@@ -252,7 +252,14 @@ def match_and_select_related_tcrs(fisher_exact_results_df, hla_labelling, patien
     result_data = []
     related_tcrs = fisher_exact_results_df[(fisher_exact_results_df['p_value'] < 0.05) & (fisher_exact_results_df['odds_ratio'] > 1)].reset_index(drop=True)
     print("Related TCRs fisher exact: ",len(related_tcrs)) 
-    top_related_tcrs = related_tcrs.sort_values(by=[sort_column]).head(top_n)
+    # if sort column is p_value, sort the related tcrs by p_value in ascending order (lower p-value is better)
+    top_related_tcrs = None
+    if sort_column == 'p_value':
+        top_related_tcrs = related_tcrs.sort_values(by=['p_value']).head(top_n)
+    # if sort column is odds_ratio, sort the related tcrs by odds_ratio in descending order (higher odds ratio is better)
+    elif sort_column == 'odds_ratio':
+        related_tcrs = related_tcrs.sort_values(by=['odds_ratio'], ascending=False)
+        top_related_tcrs = related_tcrs.head(top_n)
 
     if benjamini_hochberg:
         fisher_exact_results_df = apply_benjamini_hochberg(fisher_exact_results_df)
@@ -263,6 +270,11 @@ def match_and_select_related_tcrs(fisher_exact_results_df, hla_labelling, patien
             top_related_tcrs = related_tcrs.sort_values(by=[sort_column]).head(top_n)
 
     print("Selected related TCRs: ",len(top_related_tcrs)) 
+    print("Selected related TCRs: ",top_related_tcrs)   
+
+    #check if top-related tcrs has column 'TCR'
+    if 'TCR' not in top_related_tcrs.columns:
+        top_related_tcrs['TCR'] = [tuple(tcr) for tcr in zip(top_related_tcrs['v_call'], top_related_tcrs['junction_aa'], top_related_tcrs['j_call'])]
 
     
     for f in tsv_gz_files:
@@ -283,6 +295,7 @@ def match_and_select_related_tcrs(fisher_exact_results_df, hla_labelling, patien
             if {'v_call', 'junction_aa', 'j_call'}.issubset(df.columns):
                 df['TCR'] = [tuple(tcr) for tcr in zip(df['v_call'], df['junction_aa'], df['j_call'])]            
             else:
+                print("oclumns are not present")
                 continue  # Sla over als de vereiste kolommen ontbreken
             
             # Haal totalen op
@@ -340,7 +353,8 @@ def calculate_metrics(result_df):
 
 #make a ROC curve for the trained model
 def plot_roc_curve(result_df, top_n, training=True, benjamini_hochberg=False, 
-                   threshold=None, selected_tcrs_patients=None, semi_supervised=False):
+                   threshold=None, selected_tcrs_patients=None, semi_supervised=False, 
+                   convergence_method=False, folder='results\\', sort_column='p_value'):
     # Bereken ROC-curve en AUC
     fpr, tpr, thresholds = roc_curve(result_df['has_HLA_A02_01_label'], result_df['probability'])
     roc_auc = auc(fpr, tpr)
@@ -355,7 +369,8 @@ def plot_roc_curve(result_df, top_n, training=True, benjamini_hochberg=False,
     # Bepaal titel en bestandsnaam
     dataset_type = "training" if training else "validation"
     title = f"ROC Logistic Regression top {top_n} related tcrs ({dataset_type.capitalize()} set)"
-    filename = f"results\\plots\\ROC_Logistic_Regression_top{top_n}_related_tcrs_{dataset_type}.png"
+    filename = folder + f"\\plots\\ROC_Logistic_Regression_top{top_n}_related_tcrs_{dataset_type}.png"
+    #filename = f"results\\plots\\ROC_Logistic_Regression_top{top_n}_related_tcrs_{dataset_type}.png"
 
     if benjamini_hochberg:
         title += ", Benjamini-Hochberg"
@@ -369,6 +384,15 @@ def plot_roc_curve(result_df, top_n, training=True, benjamini_hochberg=False,
     if semi_supervised:
         title += ", Semi-supervised"
         filename = filename.replace(".png", "_semi_supervised.png")
+    if convergence_method:
+        title += ", Convergence method"
+        filename = filename.replace(".png", "_convergence_method.png")
+    if sort_column == 'p_value':
+        title += ", Sorted by p-value"
+        filename = filename.replace(".png", "_sorted_p_value.png")
+    elif sort_column == 'odds_ratio':
+        title += ", Sorted by odds ratio"
+        filename = filename.replace(".png", "_sorted_odds_ratio.png")
 
     # Toon en sla de plot op
     print(title)
@@ -454,25 +478,25 @@ def plot_total_vs_significant_tcrs(result_df, top_n=10, training=True, threshold
 
 
 def preprocessing_dataset(fisher_exact_results_df, patient_df, patients_path, 
-                          top_n=10, benjamini_hochberg=False, selected_tcrs_patients=None):
-    print("preprocessing dataset")
+                          top_n=10, benjamini_hochberg=False, selected_tcrs_patients=None, sort_column='p_value'):
     result_df = match_and_select_related_tcrs(fisher_exact_results_df=fisher_exact_results_df, hla_labelling=patient_df, 
-                                              patients_path=patients_path, top_n=top_n, benjamini_hochberg=benjamini_hochberg, 
-                                              selected_tcrs_patients=selected_tcrs_patients)
-    print(result_df)
+                                              patients_path=patients_path, top_n=top_n, sort_column=sort_column,
+                                              benjamini_hochberg=benjamini_hochberg, selected_tcrs_patients=selected_tcrs_patients)
+    
     # Make a label for the target (has_HLA_A02_01), model can't handle boolean values
     # 0 = False, 1 = True
     result_df['has_HLA_A02_01'] = result_df['has_HLA_A02_01'].replace('None', np.nan)
     #drop none values
     result_df = result_df.dropna()
     result_df['has_HLA_A02_01_label'] = result_df['has_HLA_A02_01'].astype('category').cat.codes
+    #print("result_df: ",result_df)
     return result_df
 
 
 def train_training_dataset(result_df_training, top_n=10, benjamini_hochberg=False, 
                            threshold=None, selected_tcrs_patients=None, filename_model=None,
-                           semi_supervised=False):
-    metrics_training_data = []
+                           semi_supervised=False, convergence_method=False, folder='results\\',
+                           sort_column='p_value'):
     
     #select first 400 patients for training
     result_df_training.sort_values(by=['repertoire_id'], inplace=True, ignore_index=True)
@@ -482,48 +506,52 @@ def train_training_dataset(result_df_training, top_n=10, benjamini_hochberg=Fals
     result_df_training, model = make_classifier(result_df_training, top_n, benjamini_hochberg, filename=filename_model)
 
     # Make roc curve
-    roc_auc = plot_roc_curve(result_df_training, top_n, benjamini_hochberg, 
+    roc_auc = plot_roc_curve(result_df=result_df_training, top_n=top_n, training=True, benjamini_hochberg=benjamini_hochberg, 
                              threshold=threshold, selected_tcrs_patients=selected_tcrs_patients,
-                             semi_supervised=semi_supervised)
+                             semi_supervised=semi_supervised, convergence_method=convergence_method, 
+                             folder=folder, sort_column=sort_column)
     sensitivity, specificity, accuracy = calculate_metrics(result_df_training)
 
-    metrics_training_data.append({
+    metrics_training_data = {
             'top_n': top_n, 
             'threshold': threshold,
             'selected_tcrs_patients': selected_tcrs_patients,
             'benjamini_hochberg': benjamini_hochberg,
+            'sort_column': sort_column,
             'roc_auc': roc_auc, 
             'sensitivity': sensitivity, 
             'specificity': specificity, 
             'accuracy': accuracy
-        })
+        }
     
     return model, metrics_training_data
     
 
 def validate_validation_dataset(result_df_validation, top_n=10, number_patients=666, benjamini_hochberg=False, 
-                                threshold=None, selected_tcrs_patients=None, model=None):
-    metrics_validation_data = []
+                                threshold=None, selected_tcrs_patients=None, model=None, convergence_method=False, 
+                                folder='results\\', sort_column='p_value'):
     if number_patients == 400:
         result_df_validation = result_df_validation.iloc[400:]
     X_val = result_df_validation[['total_tcrs', 'related_tcrs']]
     y_val = result_df_validation['has_HLA_A02_01_label']
     result_df_validation['probability'] = model.predict_proba(X_val)[:, 1]
     result_df_validation['prediction'] = model.predict(X_val)
-    roc_auc = plot_roc_curve(result_df_validation, top_n, False, benjamini_hochberg, 
-                             threshold=threshold, selected_tcrs_patients=selected_tcrs_patients)
+    roc_auc = plot_roc_curve(result_df=result_df_validation, top_n=top_n, training=False, benjamini_hochberg=benjamini_hochberg, 
+                             threshold=threshold, selected_tcrs_patients=selected_tcrs_patients, 
+                             convergence_method=convergence_method, folder=folder, sort_column=sort_column)
     sensitivity, specificity, accuracy = calculate_metrics(result_df_validation)
 
-    metrics_validation_data.append({
+    metrics_validation_data = {
         'top_n': top_n, 
         'threshold': threshold,
         'selected_tcrs_patients': selected_tcrs_patients,
         'benjamini_hochberg': benjamini_hochberg,
+         'sort_column': sort_column,
         'roc_auc': roc_auc, 
         'sensitivity': sensitivity, 
         'specificity': specificity, 
         'accuracy': accuracy
-    })
+    }
 
     return metrics_validation_data
 
@@ -676,7 +704,8 @@ def convergence_method(data, patient_df):
     cva = ConvergenceAnalysis(
         tcr_embedder=tcr_embedder,
         convergence_metric=fisher,
-        verbose=True
+        verbose=True,
+        index_method="auto"
     )
 
     cva_res = cva.batched_fit_transform(
@@ -686,6 +715,38 @@ def convergence_method(data, patient_df):
     return cva_res
 
 
+def plot_line_plot(fisher_exact, convergence, compare_metric, base_column='top_n',
+                   methods=('_fisher_exact', '_convergence'), sort_column='p_value',
+                   folder='results\\', training=True):
+    
+    # Merge the two dataframes on the top_n column and keep the compare_metric column
+    merged_df = pd.merge(fisher_exact[[base_column, compare_metric]], convergence[[base_column, compare_metric]], 
+                         on=base_column, suffixes=methods)
+    
+    columns = [compare_metric + methods[i] for i in range(len(methods))]
+
+    plt.figure(figsize=(10, 6))
+
+    for column in columns:
+        sns.lineplot(data=merged_df, x=base_column, y=column, label=column, marker='o')
+
+    plt.xlabel('Top N Related TCRs')
+    plt.ylabel(compare_metric)
+    methods_str = ' and '.join([method[1:] for method in methods])
+    if training == True:
+        plt.title(f'{compare_metric} per Top N Related TCRs for {methods_str} (sorted on {sort_column}, Training Dataset)')
+    elif training == False:
+        plt.title(f'{compare_metric} per Top N Related TCRs for {methods_str} (sorted on {sort_column}, Validation Dataset)')
+    plt.legend()
+
+    if training == True:
+        filename = folder + f'\\plots\\{compare_metric}_per_{base_column}_for_methods_{methods}_sorted_{sort_column}_training_dataset.png'
+    elif training == False:
+        filename = folder + f'\\plots\\{compare_metric}_per_{base_column}_for_methods_{methods}_sorted_{sort_column}_validation_dataset.png'
+
+    plt.savefig(filename)
+
+    plt.show()
 
 
 
