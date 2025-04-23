@@ -47,7 +47,7 @@ def read_patient_files(patients_path, number_of_patients=666, training=True):
 
 
 
-def matching_patients_tcrs(patients_path, number_of_patients=400, top_n=None):
+def matching_patients_tcrs(patients_path, number_of_patients=400, top_n=None, min_occurences=5):
     tsv_gz_files, patient_names = read_patient_files(patients_path, number_of_patients)
 
     files_path = path + patients_path #'\\data\\HLA_emerson_2017'
@@ -70,7 +70,7 @@ def matching_patients_tcrs(patients_path, number_of_patients=400, top_n=None):
 
 
     tcr_df = pd.DataFrame(list(clonotype_occurences.items()), columns=['combination', 'repertoire_ids'])
-    tcr_df = tcr_df[tcr_df['repertoire_ids'].apply(len) >= 5]
+    tcr_df = tcr_df[tcr_df['repertoire_ids'].apply(len) >= min_occurences]
     tcr_df.reset_index(drop=True, inplace=True)
     return tcr_df
 
@@ -95,7 +95,7 @@ def read_file(filename):
 # (A_02_01_features.txt contains the indices to the patient files)
 """
 
-def match_hla(patients_path, hla_path):
+def match_hla(patients_path, hla_path, hla_type='HLA-A*02:01'):
     tsv_gz_files, all_patient_names = read_patient_files(patients_path)
 
     record =  {}  # Temporary dictionary to hold one record
@@ -105,7 +105,7 @@ def match_hla(patients_path, hla_path):
     with open(file_path, "r") as file:
         for line in file:
             line = line.split(" ")
-            if line[1] == 'HLA-A*02:01':
+            if line[1] == hla_type:
                 key = line[2]
                 for i in range(5, len(line)):
                     value = line[i]
@@ -123,7 +123,9 @@ def match_hla(patients_path, hla_path):
         if patient not in record.keys():
             record[patient] = None
 
-    patient_df = pd.DataFrame(list(record.items()), columns=['repertoire_id', 'has_HLA_A02_01'])
+    column_name = 'has_' + hla_type.replace('*', '').replace(':', '_').replace('-', '_')
+
+    patient_df = pd.DataFrame(list(record.items()), columns=['repertoire_id', column_name])
     patient_df.sort_values(by=['repertoire_id'], inplace=True, ignore_index=True)
     return patient_df
 
@@ -146,7 +148,7 @@ def select_patients_hla_labelling(patient_df, number_of_patients=666, hla_column
 # the p-value and odds ratio of fisher_exact method (use psuedocount of 0.1)
 """
 
-def execute_fisher_exact(tcr_df, patient_df):
+def execute_fisher_exact(tcr_df, patient_df, hla_column='has_HLA_A02_01', hla_type='HLA-A*02:01'):
     fisher_exact_results = []
     for index, row in tcr_df.iterrows():
         # Haal de eerste rij van tcr_df en zijn combinatie en repertoire_ids
@@ -157,14 +159,14 @@ def execute_fisher_exact(tcr_df, patient_df):
         filtered_patients = patient_df[patient_df['repertoire_id'].isin(repertoire_ids)]
 
         # Tel het aantal patiënten in elke categorie
-        have_hla_and_tcr = len(filtered_patients[filtered_patients['has_HLA_A02_01'] == True]) + 0.1  # Aantal met HLA en TCR
-        have_no_hla_and_tcr = len(filtered_patients[filtered_patients['has_HLA_A02_01'] == False]) + 0.1  # Aantal zonder HLA maar met TCR
+        have_hla_and_tcr = len(filtered_patients[filtered_patients[hla_column] == True]) + 0.1  # Aantal met HLA en TCR
+        have_no_hla_and_tcr = len(filtered_patients[filtered_patients[hla_column] == False]) + 0.1  # Aantal zonder HLA maar met TCR
 
 
         # Aantal patiënten zonder TCR
-        have_hla_no_tcr = len(patient_df[(patient_df['has_HLA_A02_01'] == True) & 
+        have_hla_no_tcr = len(patient_df[(patient_df[hla_column] == True) & 
                                                 (~patient_df['repertoire_id'].isin(repertoire_ids))]) + 0.1
-        have_no_hla_no_tcr = len(patient_df[(patient_df['has_HLA_A02_01'] == False) & 
+        have_no_hla_no_tcr = len(patient_df[(patient_df[hla_column] == False) & 
                                                     (~patient_df['repertoire_id'].isin(repertoire_ids))]) + 0.1
         
 
@@ -184,9 +186,10 @@ def execute_fisher_exact(tcr_df, patient_df):
         # Voer de Fisher's Exact Test uit
         odds_ratio, p_value = fisher_exact(contingency_table)
 
+
         # Voeg de resultaten toe aan de lijst
         fisher_exact_results.append({
-            'HLA': 'HLA-A*02:01',
+            'HLA': hla_type,
             'TCR': combination,
             'odds_ratio': odds_ratio,
             'p_value': p_value,
@@ -243,7 +246,7 @@ def apply_benjamini_hochberg(fisher_exact_results_df):
 
 def match_and_select_related_tcrs(fisher_exact_results_df, hla_labelling, patients_path, 
                                   top_n=10, number_patients=666, sort_column='p_value', 
-                                  benjamini_hochberg=False, selected_tcrs_patients=None):
+                                  benjamini_hochberg=False, selected_tcrs_patients=None, hla_column='has_HLA_A02_01'):
 
     tsv_gz_files, patient_names = read_patient_files(patients_path, number_patients)
 
@@ -270,7 +273,7 @@ def match_and_select_related_tcrs(fisher_exact_results_df, hla_labelling, patien
             top_related_tcrs = related_tcrs.sort_values(by=[sort_column]).head(top_n)
 
     print("Selected related TCRs: ",len(top_related_tcrs)) 
-    print("Selected related TCRs: ",top_related_tcrs)   
+    #print("Selected related TCRs: ",top_related_tcrs)   
 
     #check if top-related tcrs has column 'TCR'
     if 'TCR' not in top_related_tcrs.columns:
@@ -306,7 +309,7 @@ def match_and_select_related_tcrs(fisher_exact_results_df, hla_labelling, patien
             has_hla = None
             hla_row = hla_labelling[hla_labelling['repertoire_id'] == rep_id]
             if not hla_row.empty:
-                has_hla = hla_row['has_HLA_A02_01'].iloc[0]
+                has_hla = hla_row[hla_column].iloc[0]
             #if hla is NaN value, change to None
             if pd.isna(has_hla):  # Controleer of de waarde NaN is
                 has_hla = None
@@ -319,7 +322,7 @@ def match_and_select_related_tcrs(fisher_exact_results_df, hla_labelling, patien
                 'repertoire_id': rep_id,
                 'total_tcrs': total_tcrs,
                 'related_tcrs': matching_tcrs,
-                'has_HLA_A02_01': has_hla
+                hla_column: has_hla
             })
             
 
@@ -332,9 +335,10 @@ def match_and_select_related_tcrs(fisher_exact_results_df, hla_labelling, patien
     return result_df 
 
     
-def calculate_metrics(result_df):
+def calculate_metrics(result_df, hla_column='has_HLA_A02_01'):
     # Compute the confusion matrix
-    cm = confusion_matrix(result_df['has_HLA_A02_01_label'], result_df['prediction'])
+    hla_label = hla_column +'_label'
+    cm = confusion_matrix(result_df[hla_label], result_df['prediction'])
     TN, FP, FN, TP = cm.ravel()
 
     # Calculate metrics
@@ -347,16 +351,18 @@ def calculate_metrics(result_df):
     print(f"Specificity: {specificity:.2f}")
     print(f"Accuracy: {accuracy:.2f}")
 
-    print(classification_report(result_df['has_HLA_A02_01_label'], result_df['prediction'], target_names=['Class 0', 'Class 1']))
+    print(classification_report(result_df[hla_label], result_df['prediction'], target_names=['Class 0', 'Class 1']))
     return sensitivity, specificity, accuracy
 
 
 #make a ROC curve for the trained model
 def plot_roc_curve(result_df, top_n, training=True, benjamini_hochberg=False, 
                    threshold=None, selected_tcrs_patients=None, semi_supervised=False, 
-                   convergence_method=False, folder='results\\', sort_column='p_value'):
+                   convergence_method=False, folder='results\\', sort_column='p_value', hla_column='has_HLA_A02_01'):
     # Bereken ROC-curve en AUC
-    fpr, tpr, thresholds = roc_curve(result_df['has_HLA_A02_01_label'], result_df['probability'])
+    hla_label = hla_column +'_label'
+    hla_type = hla_column.replace('has_', '')
+    fpr, tpr, thresholds = roc_curve(result_df[hla_label], result_df['probability'])
     roc_auc = auc(fpr, tpr)
 
     # Plot instellingen
@@ -368,8 +374,8 @@ def plot_roc_curve(result_df, top_n, training=True, benjamini_hochberg=False,
 
     # Bepaal titel en bestandsnaam
     dataset_type = "training" if training else "validation"
-    title = f"ROC Logistic Regression top {top_n} related tcrs ({dataset_type.capitalize()} set)"
-    filename = folder + f"\\plots\\ROC_Logistic_Regression_top{top_n}_related_tcrs_{dataset_type}.png"
+    title = f"ROC Logistic Regression {hla_type} top {top_n} related tcrs ({dataset_type.capitalize()} set)"
+    filename = folder + f"\\plots\\ROC_Logistic_Regression_{hla_type}_top{top_n}_related_tcrs_{dataset_type}.png"
     #filename = f"results\\plots\\ROC_Logistic_Regression_top{top_n}_related_tcrs_{dataset_type}.png"
 
     if benjamini_hochberg:
@@ -406,15 +412,16 @@ def plot_roc_curve(result_df, top_n, training=True, benjamini_hochberg=False,
 
 
 
-def make_classifier(result_df, top_n=10, benjamini_hochberg=False, filename=None):
+def make_classifier(result_df, top_n=10, benjamini_hochberg=False, filename=None, hla_column='has_HLA_A02_01'):
     # make classifier logistic regression: 
     # - features are total_tcrs and related_tcrs
     # - target is has_HLA_A02_01 
     # - save the model
 
     model = LogisticRegression()
+    hla_label = hla_column +'_label'
     X = result_df[['total_tcrs', 'related_tcrs']]
-    y = result_df['has_HLA_A02_01_label']
+    y = result_df[hla_label]
     model.fit(X, y)
     
     result_df['probability'] = model.predict_proba(X)[:, 1]
@@ -478,17 +485,19 @@ def plot_total_vs_significant_tcrs(result_df, top_n=10, training=True, threshold
 
 
 def preprocessing_dataset(fisher_exact_results_df, patient_df, patients_path, 
-                          top_n=10, benjamini_hochberg=False, selected_tcrs_patients=None, sort_column='p_value'):
+                          top_n=10, benjamini_hochberg=False, selected_tcrs_patients=None, sort_column='p_value',
+                          hla_column='has_HLA_A02_01'):
     result_df = match_and_select_related_tcrs(fisher_exact_results_df=fisher_exact_results_df, hla_labelling=patient_df, 
                                               patients_path=patients_path, top_n=top_n, sort_column=sort_column,
-                                              benjamini_hochberg=benjamini_hochberg, selected_tcrs_patients=selected_tcrs_patients)
+                                              benjamini_hochberg=benjamini_hochberg, selected_tcrs_patients=selected_tcrs_patients, hla_column=hla_column)
     
     # Make a label for the target (has_HLA_A02_01), model can't handle boolean values
     # 0 = False, 1 = True
-    result_df['has_HLA_A02_01'] = result_df['has_HLA_A02_01'].replace('None', np.nan)
+    result_df[hla_column] = result_df[hla_column].replace('None', np.nan)
     #drop none values
     result_df = result_df.dropna()
-    result_df['has_HLA_A02_01_label'] = result_df['has_HLA_A02_01'].astype('category').cat.codes
+    hla_label = hla_column +'_label'
+    result_df[hla_label] = result_df[hla_column].astype('category').cat.codes
     #print("result_df: ",result_df)
     return result_df
 
@@ -496,21 +505,21 @@ def preprocessing_dataset(fisher_exact_results_df, patient_df, patients_path,
 def train_training_dataset(result_df_training, top_n=10, benjamini_hochberg=False, 
                            threshold=None, selected_tcrs_patients=None, filename_model=None,
                            semi_supervised=False, convergence_method=False, folder='results\\',
-                           sort_column='p_value'):
+                           sort_column='p_value', hla_column='has_HLA_A02_01'):
     
     #select first 400 patients for training
     result_df_training.sort_values(by=['repertoire_id'], inplace=True, ignore_index=True)
     if semi_supervised == False:    
         result_df_training = result_df_training.iloc[:400]
 
-    result_df_training, model = make_classifier(result_df_training, top_n, benjamini_hochberg, filename=filename_model)
+    result_df_training, model = make_classifier(result_df_training, top_n, benjamini_hochberg, filename=filename_model, hla_column=hla_column)
 
     # Make roc curve
     roc_auc = plot_roc_curve(result_df=result_df_training, top_n=top_n, training=True, benjamini_hochberg=benjamini_hochberg, 
                              threshold=threshold, selected_tcrs_patients=selected_tcrs_patients,
                              semi_supervised=semi_supervised, convergence_method=convergence_method, 
-                             folder=folder, sort_column=sort_column)
-    sensitivity, specificity, accuracy = calculate_metrics(result_df_training)
+                             folder=folder, sort_column=sort_column, hla_column=hla_column)
+    sensitivity, specificity, accuracy = calculate_metrics(result_df_training, hla_column=hla_column)
 
     metrics_training_data = {
             'top_n': top_n, 
@@ -529,17 +538,18 @@ def train_training_dataset(result_df_training, top_n=10, benjamini_hochberg=Fals
 
 def validate_validation_dataset(result_df_validation, top_n=10, number_patients=666, benjamini_hochberg=False, 
                                 threshold=None, selected_tcrs_patients=None, model=None, convergence_method=False, 
-                                folder='results\\', sort_column='p_value'):
+                                folder='results\\', sort_column='p_value', hla_column='has_HLA_A02_01'):
     if number_patients == 400:
         result_df_validation = result_df_validation.iloc[400:]
+    hla_label = hla_column +'_label'
     X_val = result_df_validation[['total_tcrs', 'related_tcrs']]
-    y_val = result_df_validation['has_HLA_A02_01_label']
+    y_val = result_df_validation[hla_label]
     result_df_validation['probability'] = model.predict_proba(X_val)[:, 1]
     result_df_validation['prediction'] = model.predict(X_val)
     roc_auc = plot_roc_curve(result_df=result_df_validation, top_n=top_n, training=False, benjamini_hochberg=benjamini_hochberg, 
                              threshold=threshold, selected_tcrs_patients=selected_tcrs_patients, 
-                             convergence_method=convergence_method, folder=folder, sort_column=sort_column)
-    sensitivity, specificity, accuracy = calculate_metrics(result_df_validation)
+                             convergence_method=convergence_method, folder=folder, sort_column=sort_column, hla_column=hla_column)
+    sensitivity, specificity, accuracy = calculate_metrics(result_df_validation, hla_column=hla_column)
 
     metrics_validation_data = {
         'top_n': top_n, 
